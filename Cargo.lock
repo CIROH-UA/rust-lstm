@@ -339,21 +339,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bmi-burn-lstm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bmi-rs",
- "bmi-rs-sys",
- "burn",
- "burn-import",
- "glob",
- "serde",
- "serde_json",
- "serde_yaml",
-]
-
-[[package]]
 name = "bmi-rs"
 version = "0.0.1"
 dependencies = [
@@ -4303,6 +4288,21 @@ checksum = "60e7c00b6c3bf5e38a880eec01d7e829d12ca682079f8238a464def3c4b31627"
 dependencies = [
  "proc-macro2",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "rust-lstm-1025"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bmi-rs",
+ "bmi-rs-sys",
+ "burn",
+ "burn-import",
+ "glob",
+ "serde",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

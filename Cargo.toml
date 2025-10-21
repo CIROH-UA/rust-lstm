@@ -1,5 +1,5 @@
 [package]
-name = "bmi-burn-lstm"
+name = "rust-lstm-1025"
 version = "0.1.0"
 edition = "2024"
 

@@ -1,4 +1,4 @@
-# bmi-burn-lstm
+# rust-lstm-1025
 
 A Rust implementation of a BMI (Basic Model Interface) adapter for LSTM-based streamflow prediction, providing a drop-in replacement for the Python BMI LSTM implementations found in [CIROH-UA/lstm](https://github.com/CIROH-UA/lstm), [NOAA-OWP/lstm](https://github.com/NOAA-OWP/lstm), and [jmframe/lstm](https://github.com/jmframe/lstm).
 
@@ -38,11 +38,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 curl https://sh.rustup.rs -sSf | bash -s -- -y && . "$HOME/.cargo/env"
 
 git clone https://github.com/aaraney/bmi-rs
-git clone https://github.com/ciroh-ua/bmi-burn-lstm
+git clone https://github.com/ciroh-ua/rust-lstm-1025
 
-cd bmi-burn-lstm
+cd rust-lstm-1025
 cargo build --release
-# the shared object is located at target/release/libbmi_burn_lstm.so
+# the shared object is located at target/release/librust_lstm_1025.so
 ```
 
 ## Model Compatibility
@@ -80,7 +80,7 @@ To use the model update your NextGen configuration file with the module like thi
                 "main_output_variable": "land_surface_water__runoff_depth",
                 "uses_forcing_file": false,
                 "registration_function": "register_bmi_lstm",
-                "library_file": "/dmod/shared_libs/libbmi_burn_lstm.so"
+                "library_file": "/dmod/shared_libs/librust_lstm_1025.so"
               }
             }
           ]
@@ -115,12 +115,12 @@ RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
 RUN echo 'source $HOME/.cargo/env' >> $HOME/.bashrc
 WORKDIR /build
 RUN git clone https://github.com/aaraney/bmi-rs
-RUN git clone https://github.com/ciroh-ua/bmi-burn-lstm
-WORKDIR /build/bmi-burn-lstm
+RUN git clone https://github.com/ciroh-ua/rust-lstm-1025
+WORKDIR /build/rust-lstm-1025
 RUN cargo build --release
 
 FROM awiciroh/ciroh-ngen-image AS final
-COPY --from=build /build/bmi-burn-lstm/target/release/libbmi_burn_lstm.so /dmod/shared_libs/libbmi_burn_lstm.so
+COPY --from=build /build/rust-lstm-1025/target/release/librust_lstm_1025.so /dmod/shared_libs/librust_lstm_1025.so
 ```
 ```bash
 docker build -t ngiab -f Dockerfile .
