@@ -341,6 +341,7 @@ dependencies = [
 [[package]]
 name = "bmi-rs"
 version = "0.0.1"
+source = "git+https://github.com/aaraney/bmi-rs?rev=43b88c9#43b88c94c1188bff71ef5b082ef8b13721e833a9"
 dependencies = [
  "bmi-rs-sys",
 ]
@@ -348,6 +349,7 @@ dependencies = [
 [[package]]
 name = "bmi-rs-sys"
 version = "0.0.1"
+source = "git+https://github.com/aaraney/bmi-rs?rev=43b88c9#43b88c94c1188bff71ef5b082ef8b13721e833a9"
 dependencies = [
  "bindgen",
 ]

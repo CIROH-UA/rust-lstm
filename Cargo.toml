@@ -9,10 +9,11 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0.100"
-bmi-rs = { path = "../bmi-rs/bmi-rs/" }
+bmi-rs = { git = "https://github.com/aaraney/bmi-rs", rev = "43b88c9" }
+# bmi-rs = { path = "../bmi-rs/bmi-rs/" }
 burn = { version = "0.18.0", features = ["candle", "ndarray"] }
 burn-import = "0.18.0"
-ffi = { path = "../bmi-rs/bmi-rs-sys/", package = "bmi-rs-sys", version = "0.0.1" }
+ffi = { git = "https://github.com/aaraney/bmi-rs", rev = "43b88c9", package = "bmi-rs-sys" }
 glob = "0.3.3"
 serde = { version = "1.0.226", features = ["derive"] }
 serde_json = "1.0.145"
