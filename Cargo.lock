@@ -340,7 +340,9 @@ dependencies = [
 
 [[package]]
 name = "bmi-rs"
-version = "0.0.1"
+version = "0.0.1-alpha.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0f1f6dbcd61d3a6ed980511d76e088221b1dc9c0d20aaadaac95ced0346bb27"
 dependencies = [
  "bmi-rs-sys",
 ]
@@ -348,6 +350,8 @@ dependencies = [
 [[package]]
 name = "bmi-rs-sys"
 version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a8dced9573091f51cda8deeb60ab8c9d3430c0f3e034f35170a4441cf8ca32"
 dependencies = [
  "bindgen",
 ]
