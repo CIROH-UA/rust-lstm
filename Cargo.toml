@@ -3,6 +3,14 @@ name = "rust-lstm-1025"
 version = "0.1.1"
 edition = "2024"
 
+description = "A Rust implementation of a BMI (Basic Model Interface) adapter for LSTM-based streamflow prediction."
+readme = "./README.md"
+authors = ["Josh Cunningham <jcunningham8@ua.edu>"]
+license = "MIT"
+
+homepage = "https://github.com/CIROH-UA/rust-lstm"
+repository = "https://github.com/CIROH-UA/rust-lstm"
+
 [lib]
 crate-type = ["cdylib"]
 
