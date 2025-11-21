@@ -1,6 +1,6 @@
 [package]
 name = "rust-lstm-1025"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 description = "A Rust implementation of a BMI (Basic Model Interface) adapter for LSTM-based streamflow prediction."
@@ -16,10 +16,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0.100"
-bmi-rs = "0.0.1-alpha.0"
+bmi-rs = { git = "https://github.com/joshcu/bmi-rs/", package = "bmi-rs", branch = "compat", features = ["compat"] }
 burn = { version = "0.18.0", features = ["candle", "ndarray"] }
 burn-import = "0.18.0"
-ffi = {package = "bmi-rs-sys", version = "0.0.1" }
+ffi = { git = "https://github.com/joshcu/bmi-rs/", package = "bmi-rs-sys", branch = "compat" }
 glob = "0.3.3"
 serde = { version = "1.0.226", features = ["derive"] }
 serde_json = "1.0.145"

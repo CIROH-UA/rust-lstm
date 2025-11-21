@@ -341,8 +341,7 @@ dependencies = [
 [[package]]
 name = "bmi-rs"
 version = "0.0.1-alpha.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0f1f6dbcd61d3a6ed980511d76e088221b1dc9c0d20aaadaac95ced0346bb27"
+source = "git+https://github.com/joshcu/bmi-rs/?branch=compat#09d77d950a68dc3022c0c75640a643230e864772"
 dependencies = [
  "bmi-rs-sys",
 ]
@@ -350,8 +349,7 @@ dependencies = [
 [[package]]
 name = "bmi-rs-sys"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a8dced9573091f51cda8deeb60ab8c9d3430c0f3e034f35170a4441cf8ca32"
+source = "git+https://github.com/joshcu/bmi-rs/?branch=compat#09d77d950a68dc3022c0c75640a643230e864772"
 dependencies = [
  "bindgen",
 ]
@@ -4296,7 +4294,7 @@ dependencies = [
 
 [[package]]
 name = "rust-lstm-1025"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bmi-rs",
