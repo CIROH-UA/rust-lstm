@@ -2492,6 +2492,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardcode_weights"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4302,6 +4310,7 @@ dependencies = [
  "burn",
  "burn-import",
  "glob",
+ "hardcode_weights",
  "serde",
  "serde_json",
  "serde_yaml",

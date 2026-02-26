@@ -1,3 +1,4 @@
+use crate::weights::WeightConfig;
 use burn::{
     module::Param,
     nn::{
@@ -60,6 +61,15 @@ pub fn vec_to_tensor(input_vec: &Vec<f32>, shape: Vec<usize>) -> TensorData {
     }
 }
 
+pub fn serde_to_vec(value: &Value) -> Vec<f32> {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap() as f32)
+        .collect()
+}
+
 fn create_gate_controller<B: Backend>(
     input_weights: &Vec<f32>,
     input_biases: &Vec<f32>,
@@ -116,113 +126,100 @@ impl<B: Backend> NextgenLstm<B> {
             .init(device);
         Self { lstm, head }
     }
-    pub fn load_json_weights(&mut self, device: &B::Device, weight_path: &str) {
-        let json_str = fs::read_to_string(weight_path).expect("Failed to read file");
-        let weights: Value = serde_json::from_str(&json_str).unwrap();
-
-        fn to_vec(value: &Value) -> Vec<f32> {
-            value
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap() as f32)
-                .collect()
+    fn get_json_weights(weight_path: &str) -> Option<WeightConfig> {
+        let json_str = fs::read_to_string(weight_path);
+        if let Err(e) = json_str {
+            eprintln!("Error reading weights file at ({}): {}", weight_path, e);
+            return None;
         }
-
-        let input_size = weights["input_size"].as_u64().unwrap() as usize;
-        let output_size = weights["output_size"].as_u64().unwrap() as usize;
-        let hidden_size = weights["hidden_size"].as_u64().unwrap() as usize;
-
-        // Extract all weights as Vecs
-        let input_gate_input_weights = to_vec(&weights["lstm.input_gate.input_transform.weight"]);
-        let input_gate_input_biases = to_vec(&weights["lstm.input_gate.input_transform.bias"]);
-        let input_gate_hidden_weights = to_vec(&weights["lstm.input_gate.hidden_transform.weight"]);
-        let input_gate_hidden_biases = to_vec(&weights["lstm.input_gate.hidden_transform.bias"]);
+        let weights: Value = serde_json::from_str(&json_str.unwrap()).unwrap();
+        return Some(WeightConfig {
+            input_size: weights["input_size"].as_u64().unwrap() as usize,
+            hidden_size: weights["hidden_size"].as_u64().unwrap() as usize,
+            output_size: weights["output_size"].as_u64().unwrap() as usize,
+            input_gate_input_weights: serde_to_vec(&weights["lstm.input_gate.input_transform.weight"]),
+            input_gate_input_biases: serde_to_vec(&weights["lstm.input_gate.input_transform.bias"]),
+            input_gate_hidden_weights: serde_to_vec(&weights["lstm.input_gate.hidden_transform.weight"]),
+            input_gate_hidden_biases: serde_to_vec(&weights["lstm.input_gate.hidden_transform.bias"]),
+            forget_gate_input_weights: serde_to_vec(&weights["lstm.forget_gate.input_transform.weight"]),
+            forget_gate_input_biases: serde_to_vec(&weights["lstm.forget_gate.input_transform.bias"]),
+            forget_gate_hidden_weights: serde_to_vec(&weights["lstm.forget_gate.hidden_transform.weight"]),
+            forget_gate_hidden_biases: serde_to_vec(&weights["lstm.forget_gate.hidden_transform.bias"]),
+            cell_gate_input_weights: serde_to_vec(&weights["lstm.cell_gate.input_transform.weight"]),
+            cell_gate_input_biases: serde_to_vec(&weights["lstm.cell_gate.input_transform.bias"]),
+            cell_gate_hidden_weights: serde_to_vec(&weights["lstm.cell_gate.hidden_transform.weight"]),
+            cell_gate_hidden_biases: serde_to_vec(&weights["lstm.cell_gate.hidden_transform.bias"]),
+            output_gate_input_weights: serde_to_vec(&weights["lstm.output_gate.input_transform.weight"]),
+            output_gate_input_biases: serde_to_vec(&weights["lstm.output_gate.input_transform.bias"]),
+            output_gate_hidden_weights: serde_to_vec(&weights["lstm.output_gate.hidden_transform.weight"]),
+            output_gate_hidden_biases: serde_to_vec(&weights["lstm.output_gate.hidden_transform.bias"]),
+        });
+    }
+    fn get_hardcoded_weights(weight_path: &str) -> Option<WeightConfig> {
+        let weight_dirname: &str = weight_path.split('/').rev().nth(2).unwrap();
+        match weight_dirname {
+            "nh_AORC_hourly_25yr_1210_112435_7" => WeightConfig::nh_AORC_hourly_25yr_1210_112435_7(),
+            "nh_AORC_hourly_25yr_1210_112435_8" => WeightConfig::nh_AORC_hourly_25yr_1210_112435_8(),
+            "nh_AORC_hourly_25yr_1210_112435_9" => WeightConfig::nh_AORC_hourly_25yr_1210_112435_9(),
+            "nh_AORC_hourly_25yr_seq999_seed101_0701_143442" => WeightConfig::nh_AORC_hourly_25yr_seq999_seed101_0701_143442(),
+            "nh_AORC_hourly_25yr_seq999_seed103_2701_171540" => WeightConfig::nh_AORC_hourly_25yr_seq999_seed103_2701_171540(),
+            "nh_AORC_hourly_slope_elev_precip_temp_seq999_seed101_2801_191806" => WeightConfig::nh_AORC_hourly_slope_elev_precip_temp_seq999_seed101_2801_191806(),
+            _ => None,
+        }
+    }   
+    pub fn load_weightconfig(&mut self, device: &B::Device, weight_config: WeightConfig) {
         self.lstm.input_gate = create_gate_controller(
-            &input_gate_input_weights,
-            &input_gate_input_biases,
-            &input_gate_hidden_weights,
-            &input_gate_hidden_biases,
+            &weight_config.input_gate_input_weights,
+            &weight_config.input_gate_input_biases,
+            &weight_config.input_gate_hidden_weights,
+            &weight_config.input_gate_hidden_biases,
             device,
-            input_size,
-            hidden_size,
+            weight_config.input_size,
+            weight_config.hidden_size,
         );
-
-        let forget_gate_input_weights = to_vec(&weights["lstm.forget_gate.input_transform.weight"]);
-        let forget_gate_input_biases = to_vec(&weights["lstm.forget_gate.input_transform.bias"]);
-        let forget_gate_hidden_weights =
-            to_vec(&weights["lstm.forget_gate.hidden_transform.weight"]);
-        let forget_gate_hidden_biases = to_vec(&weights["lstm.forget_gate.hidden_transform.bias"]);
-
         self.lstm.forget_gate = create_gate_controller(
-            &forget_gate_input_weights,
-            &forget_gate_input_biases,
-            &forget_gate_hidden_weights,
-            &forget_gate_hidden_biases,
+            &weight_config.forget_gate_input_weights,
+            &weight_config.forget_gate_input_biases,
+            &weight_config.forget_gate_hidden_weights,
+            &weight_config.forget_gate_hidden_biases,
             device,
-            input_size,
-            hidden_size,
+            weight_config.input_size,
+            weight_config.hidden_size,
         );
-
-        let cell_gate_input_weights = to_vec(&weights["lstm.cell_gate.input_transform.weight"]);
-        let cell_gate_input_biases = to_vec(&weights["lstm.cell_gate.input_transform.bias"]);
-        let cell_gate_hidden_weights = to_vec(&weights["lstm.cell_gate.hidden_transform.weight"]);
-        let cell_gate_hidden_biases = to_vec(&weights["lstm.cell_gate.hidden_transform.bias"]);
-
         self.lstm.cell_gate = create_gate_controller(
-            &cell_gate_input_weights,
-            &cell_gate_input_biases,
-            &cell_gate_hidden_weights,
-            &cell_gate_hidden_biases,
+            &weight_config.cell_gate_input_weights,
+            &weight_config.cell_gate_input_biases,
+            &weight_config.cell_gate_hidden_weights,
+            &weight_config.cell_gate_hidden_biases,
             device,
-            input_size,
-            hidden_size,
+            weight_config.input_size,
+            weight_config.hidden_size,
         );
-
-        let output_gate_input_weights = to_vec(&weights["lstm.output_gate.input_transform.weight"]);
-        let output_gate_input_biases = to_vec(&weights["lstm.output_gate.input_transform.bias"]);
-        let output_gate_hidden_weights =
-            to_vec(&weights["lstm.output_gate.hidden_transform.weight"]);
-        let output_gate_hidden_biases = to_vec(&weights["lstm.output_gate.hidden_transform.bias"]);
-
         self.lstm.output_gate = create_gate_controller(
-            &output_gate_input_weights,
-            &output_gate_input_biases,
-            &output_gate_hidden_weights,
-            &output_gate_hidden_biases,
+            &weight_config.output_gate_input_weights,
+            &weight_config.output_gate_input_biases,
+            &weight_config.output_gate_hidden_weights,
+            &weight_config.output_gate_hidden_biases,
             device,
-            input_size,
-            hidden_size,
+            weight_config.input_size,
+            weight_config.hidden_size,
         );
-
-        // let head_weights = to_vec(&weights["head.weight"]);
-        // let head_biases = to_vec(&weights["head.bias"]);
-
-        // // Print to verify
-        // println!("Input gate input weights: {:?}", input_gate_input_weights);
-        // println!("Input gate input biases: {:?}", input_gate_input_biases);
-        // println!("Input gate hidden weights: {:?}", input_gate_hidden_weights);
-        // println!("Input gate hidden biases: {:?}", input_gate_hidden_biases);
-        // println!("Forget gate input weights: {:?}", forget_gate_input_weights);
-        // println!("Forget gate input biases: {:?}", forget_gate_input_biases);
-        // println!(
-        //     "Forget gate hidden weights: {:?}",
-        //     forget_gate_hidden_weights
-        // );
-        // println!("Forget gate hidden biases: {:?}", forget_gate_hidden_biases);
-        // println!("Cell gate input weights: {:?}", cell_gate_input_weights);
-        // println!("Cell gate input biases: {:?}", cell_gate_input_biases);
-        // println!("Cell gate hidden weights: {:?}", cell_gate_hidden_weights);
-        // println!("Cell gate hidden biases: {:?}", cell_gate_hidden_biases);
-        // println!("Output gate input weights: {:?}", output_gate_input_weights);
-        // println!("Output gate input biases: {:?}", output_gate_input_biases);
-        // println!(
-        //     "Output gate hidden weights: {:?}",
-        //     output_gate_hidden_weights
-        // );
-        // println!("Output gate hidden biases: {:?}", output_gate_hidden_biases);
-
-        // // Repeat for other gates...
+    }
+    pub fn load_json_weights(&mut self, device: &B::Device, weight_path: &str) {
+        let weight_config = Self::get_json_weights(weight_path);
+        if weight_config.is_none() {
+            panic!("Failed to load weights from path: {}", weight_path);
+        } else {
+            self.load_weightconfig(device, weight_config.unwrap());
+        }
+    }
+    pub fn load_weights(&mut self, device: &B::Device, weight_path: &str) {
+        // Try to load hardcoded weights first, then fall back to json loading if that fails
+        if let Some(weight_config) = Self::get_hardcoded_weights(weight_path) {
+            self.load_weightconfig(device, weight_config);
+        } else {
+            self.load_json_weights(device, weight_path);
+        }
     }
 
     pub fn forward(

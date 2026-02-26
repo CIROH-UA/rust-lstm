@@ -12,6 +12,7 @@ use std::path::Path;
 
 mod nextgen_lstm;
 mod python;
+mod weights;
 use nextgen_lstm::{NextgenLstm, vec_to_tensor};
 use python::convert_model;
 
@@ -299,7 +300,8 @@ impl<B: Backend> LstmBmi<B> {
             metadata.output_size,
         );
         model = model.load_record(record);
-        model.load_json_weights(
+        // model.load_json_weights(
+        model.load_weights(
             &self.device,
             burn_dir.join("weights.json").to_str().unwrap(),
         );
