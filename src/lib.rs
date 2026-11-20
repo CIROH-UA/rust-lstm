@@ -10,7 +10,8 @@ use std::fs;
 
 use std::path::Path;
 
-mod nextgen_lstm;
+#[doc(hidden)]
+pub mod nextgen_lstm;
 mod python;
 mod weights;
 use nextgen_lstm::{NextgenLstm, vec_to_tensor};

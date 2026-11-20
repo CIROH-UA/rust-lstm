@@ -8,11 +8,10 @@ readme = "./README.md"
 authors = ["Josh Cunningham <jcunningham8@ua.edu>"]
 license = "MIT"
 
-homepage = "https://github.com/CIROH-UA/rust-lstm"
 repository = "https://github.com/CIROH-UA/rust-lstm"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1.0.100"
@@ -25,3 +24,10 @@ serde = { version = "1.0.226", features = ["derive"] }
 serde_json = "1.0.145"
 serde_yaml = "0.9.34"
 hardcode_weights = { path = "./hardcode_weights" }
+
+[dev-dependencies]
+criterion = "0.8"
+
+[[bench]]
+name = "lstm"
+harness = false
