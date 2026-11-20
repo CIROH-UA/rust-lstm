@@ -6,6 +6,7 @@
 //!   (batch 1, seq 1), i.e. the inner kernel ngen calls once per timestep per model.
 //! * `bmi_update`   – a full `Bmi::update()` on a real ensemble config: setting the
 //!   forcing inputs, scaling, running every ensemble member and averaging.
+//!   Measured for every `EnsembleLayout`.
 //!
 //! The ensemble bench needs the trained models on disk. It looks in `DEFAULT_CONFIGS`,
 //! or set `LSTM_BENCH_CONFIG=/path/to/config.yml` (relative `train_cfg_file` entries are
@@ -22,8 +23,8 @@ use bmi_rs::bmi::{Bmi, RefValues};
 use burn::nn::LstmState;
 use burn::prelude::*;
 use criterion::{Criterion, criterion_group, criterion_main};
-use rust_lstm_1025::LstmBmi;
 use rust_lstm_1025::nextgen_lstm::NextgenLstm;
+use rust_lstm_1025::{EnsembleLayout, LstmBmi};
 
 /// Searched in order when `LSTM_BENCH_CONFIG` is unset; `~` is `$HOME`.
 const DEFAULT_CONFIGS: [&str; 2] = [
@@ -38,12 +39,21 @@ const OUTPUT_SIZE: usize = 1;
 
 /// Forcing values roughly representative of an hourly AORC timestep.
 const FORCINGS: [(&str, f64); 8] = [
-    ("atmosphere_water__liquid_equivalent_precipitation_rate", 0.8),
+    (
+        "atmosphere_water__liquid_equivalent_precipitation_rate",
+        0.8,
+    ),
     ("land_surface_air__temperature", 285.0),
-    ("land_surface_radiation~incoming~longwave__energy_flux", 320.0),
+    (
+        "land_surface_radiation~incoming~longwave__energy_flux",
+        320.0,
+    ),
     ("land_surface_air__pressure", 100_500.0),
     ("atmosphere_air_water~vapor__relative_saturation", 0.007),
-    ("land_surface_radiation~incoming~shortwave__energy_flux", 250.0),
+    (
+        "land_surface_radiation~incoming~shortwave__energy_flux",
+        250.0,
+    ),
     ("land_surface_wind__x_component_of_velocity", 1.5),
     ("land_surface_wind__y_component_of_velocity", -0.7),
 ];
@@ -61,8 +71,7 @@ fn forward_step(c: &mut Criterion, name: &str, device: Device) {
 
     c.bench_function(&format!("forward_step/{name}"), |b| {
         b.iter(|| {
-            let x = Tensor::<1>::from_floats(input.as_slice(), &device)
-                .reshape([1, 1, INPUT_SIZE]);
+            let x = Tensor::<1>::from_floats(input.as_slice(), &device).reshape([1, 1, INPUT_SIZE]);
             let (out, new_state) = model.forward(black_box(x), state.take());
             state = Some(new_state);
             // Pull the scalar back to the host, as the BMI does every step.
@@ -92,16 +101,22 @@ fn bench_config() -> Option<PathBuf> {
     }
 }
 
-fn bmi_update(c: &mut Criterion, name: &str, device: Device, config: &Path) {
+fn bmi_update(
+    c: &mut Criterion,
+    name: &str,
+    device: Device,
+    layout: EnsembleLayout,
+    config: &Path,
+) {
     // train_cfg_file entries are relative to the working directory.
     std::env::set_current_dir(config.parent().unwrap()).unwrap();
 
-    let mut bmi = LstmBmi::new(device);
+    let mut bmi = LstmBmi::new(device).with_layout(layout);
     bmi.initialize(config.to_str().unwrap())
         .expect("failed to initialize BMI");
 
     let mut step: u64 = 0;
-    c.bench_function(&format!("bmi_update/{name}"), |b| {
+    c.bench_function(&format!("bmi_update/{name}/{}", layout.name()), |b| {
         b.iter(|| {
             // Vary precip a little so nothing can be hoisted out of the loop.
             let wiggle = (step % 24) as f64 * 0.05;
@@ -111,7 +126,10 @@ fn bmi_update(c: &mut Criterion, name: &str, device: Device, config: &Path) {
                 bmi.set_value(var, RefValues::F64(&v)).unwrap();
             }
             bmi.update().unwrap();
-            black_box(bmi.get_value_ptr("land_surface_water__runoff_volume_flux").unwrap());
+            black_box(
+                bmi.get_value_ptr("land_surface_water__runoff_volume_flux")
+                    .unwrap(),
+            );
         })
     });
 
@@ -127,7 +145,9 @@ fn benches(c: &mut Criterion) {
     }
     if let Some(config) = bench_config() {
         for (name, device) in &backends {
-            bmi_update(c, name, device.clone(), &config);
+            for layout in EnsembleLayout::ALL {
+                bmi_update(c, name, device.clone(), layout, &config);
+            }
         }
     }
 }

@@ -1,5 +1,4 @@
 use bmi_rs::bmi::{Bmi, BmiResult, Location, RefValues, ValueType, Values, register_model};
-use burn::nn::LstmState;
 use burn::prelude::*;
 use glob::glob;
 use serde::Deserialize;
@@ -8,8 +7,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[doc(hidden)]
+pub mod ensemble;
+#[doc(hidden)]
 pub mod nextgen_lstm;
+pub use ensemble::EnsembleLayout;
+use ensemble::StackedEnsemble;
 use nextgen_lstm::NextgenLstm;
+
+/// Environment variable overriding how ensemble members are stacked (see [`EnsembleLayout`]).
+pub const ENSEMBLE_LAYOUT_ENV: &str = "RUST_LSTM_ENSEMBLE_LAYOUT";
 
 /// The fields we need from a neuralhydrology training `config.yml`.
 #[derive(Debug, Deserialize)]
@@ -112,12 +118,10 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     out.iter().collect()
 }
 
-// Structure to hold a single model's components
+// Per-member metadata; the weights themselves live in the stacked ensemble.
 struct ModelInstance {
-    model: NextgenLstm,
     input_names: Vec<String>,
     scalars: TrainingScalars,
-    lstm_state: Option<LstmState<2>>,
 }
 
 // Macro to handle variable lookup
@@ -136,6 +140,8 @@ macro_rules! match_var {
 pub struct LstmBmi {
     // Ensemble of models
     models: Vec<ModelInstance>,
+    ensemble: Option<StackedEnsemble>,
+    layout: EnsembleLayout,
     device: Device,
 
     // Configuration
@@ -193,6 +199,8 @@ impl LstmBmi {
 
         LstmBmi {
             models: Vec::new(),
+            ensemble: None,
+            layout: EnsembleLayout::BatchedByHidden,
             device,
             config_path: String::new(),
             area_sqkm: 0.0,
@@ -246,7 +254,17 @@ impl LstmBmi {
             .unwrap_or_else(|| internal.to_string())
     }
 
-    fn load_single_model(&self, training_config_path: &Path) -> BmiResult<ModelInstance> {
+    /// Uses `layout` to stack the ensemble members, unless overridden by the
+    /// [`ENSEMBLE_LAYOUT_ENV`] environment variable.
+    pub fn with_layout(mut self, layout: EnsembleLayout) -> Self {
+        self.layout = layout;
+        self
+    }
+
+    fn load_single_model(
+        &self,
+        training_config_path: &Path,
+    ) -> BmiResult<(NextgenLstm, ModelInstance)> {
         let config: TrainingConfig =
             serde_yaml::from_str(&fs::read_to_string(training_config_path)?)?;
 
@@ -285,84 +303,63 @@ impl LstmBmi {
             config.hidden_size,
             config.target_variables.len(),
         );
-        model.load_pytorch(&model_path).map_err(|e| {
-            format!("failed to load weights from {}: {e}", model_path.display())
-        })?;
+        model
+            .load_pytorch(&model_path)
+            .map_err(|e| format!("failed to load weights from {}: {e}", model_path.display()))?;
 
-        Ok(ModelInstance {
+        Ok((
             model,
-            input_names,
-            scalars,
-            lstm_state: None,
-        })
-    }
-
-    fn run_single_model(&mut self, model_idx: usize, inputs: &[f32]) -> BmiResult<f32> {
-        let model_instance = &mut self.models[model_idx];
-
-        // Scale inputs
-        let scaled_inputs: Vec<f32> = inputs
-            .iter()
-            .zip(&model_instance.scalars.input_mean)
-            .zip(&model_instance.scalars.input_std)
-            .map(
-                |((val, mean), std)| {
-                    if *std != 0.0 { (val - mean) / std } else { 0.0 }
-                },
-            )
-            .collect();
-
-        // Create input tensor
-        let input_size = scaled_inputs.len();
-        let input_tensor = Tensor::<3>::from_data(
-            TensorData::new(scaled_inputs, [1, 1, input_size]),
-            &self.device,
-        );
-
-        // Forward pass
-        let (output, new_state) = model_instance
-            .model
-            .forward(input_tensor, model_instance.lstm_state.take());
-        model_instance.lstm_state = Some(new_state);
-
-        // Process output
-        let output_vec: Vec<f32> = output
-            .into_data()
-            .try_to_vec()
-            .map_err(|e| format!("unexpected model output: {e:?}"))?;
-        let output_value = output_vec[0];
-
-        // Denormalize
-        let surface_runoff_mm = (output_value * model_instance.scalars.output_std
-            + model_instance.scalars.output_mean)
-            .max(0.0);
-
-        Ok(surface_runoff_mm)
+            ModelInstance {
+                input_names,
+                scalars,
+            },
+        ))
     }
 
     fn run_ensemble(&mut self) -> BmiResult<()> {
         if self.models.is_empty() {
             return Err("No models in ensemble")?;
         }
-        // Run all models and collect outputs
-        let mut ensemble_outputs = Vec::new();
-        for i in 0..self.models.len() {
-            let input_names = self.models[i].input_names.clone();
-            // Gather inputs in the correct order
-            let mut inputs = Vec::new();
-            for name in &input_names {
-                let bmi_name = self.internal_to_external_name(name);
-                let value = self
-                    .variables
-                    .get(&bmi_name)
-                    .and_then(|v| v.first())
-                    .copied()
-                    .unwrap_or(0.0) as f32;
-                inputs.push(value);
-            }
-            let output = self.run_single_model(i, &inputs)?;
-            ensemble_outputs.push(output);
-        }
+        // Gather and scale each member's inputs, in that member's input order
+        let scaled_inputs: Vec<Vec<f32>> = self
+            .models
+            .iter()
+            .map(|model| {
+                model
+                    .input_names
+                    .iter()
+                    .zip(&model.scalars.input_mean)
+                    .zip(&model.scalars.input_std)
+                    .map(|((name, mean), std)| {
+                        let value = self
+                            .variables
+                            .get(&self.internal_to_external_name(name))
+                            .and_then(|v| v.first())
+                            .copied()
+                            .unwrap_or(0.0) as f32;
+                        if *std != 0.0 {
+                            (value - mean) / std
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // One timestep of every member, then denormalise each member's output
+        let raw_outputs = self
+            .ensemble
+            .as_mut()
+            .ok_or("Ensemble not initialized")?
+            .step(&scaled_inputs, &self.device);
+        let ensemble_outputs: Vec<f32> = raw_outputs
+            .iter()
+            .zip(&self.models)
+            .map(|(output, model)| {
+                (output * model.scalars.output_std + model.scalars.output_mean).max(0.0)
+            })
+            .collect();
 
         // Calculate mean of ensemble outputs
         let mean_surface_runoff_mm = if !ensemble_outputs.is_empty() {
@@ -406,6 +403,7 @@ impl Bmi for LstmBmi {
         // println!("Loading ensemble of {} models", training_configs.len());
 
         // Load each model in the ensemble
+        let mut networks = Vec::with_capacity(training_configs.len());
         for (idx, config_value) in training_configs.iter().enumerate() {
             let training_config_path = Path::new(
                 config_value
@@ -420,9 +418,18 @@ impl Bmi for LstmBmi {
             //     training_config_path.display()
             // );
 
-            let model_instance = self.load_single_model(training_config_path)?;
+            let (network, model_instance) = self.load_single_model(training_config_path)?;
+            networks.push(network);
             self.models.push(model_instance);
         }
+
+        // Fuse the members into stacked LSTMs
+        let layout = match std::env::var(ENSEMBLE_LAYOUT_ENV) {
+            Ok(name) => name.parse::<EnsembleLayout>()?,
+            Err(_) => self.layout,
+        };
+        let networks: Vec<&NextgenLstm> = networks.iter().collect();
+        self.ensemble = Some(StackedEnsemble::new(&networks, layout, &self.device));
 
         // Get area from config
         self.area_sqkm = config
@@ -487,6 +494,7 @@ impl Bmi for LstmBmi {
 
     fn finalize(&mut self) -> BmiResult<()> {
         self.models.clear();
+        self.ensemble = None;
         Ok(())
     }
 
@@ -704,7 +712,11 @@ mod tests {
             ("run", "run"),
         ];
         for (input, expected) in cases {
-            assert_eq!(normalize_lexically(Path::new(input)), PathBuf::from(expected), "{input}");
+            assert_eq!(
+                normalize_lexically(Path::new(input)),
+                PathBuf::from(expected),
+                "{input}"
+            );
         }
     }
 }

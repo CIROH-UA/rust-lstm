@@ -51,6 +51,17 @@ This implementation works with:
 
 The PyTorch checkpoint (`model_*.pt`), training `config.yml` and `train_data/train_data_scaler.yml` are read directly from each model's run directory. No Python or conversion step is needed.
 
+## Ensembles
+
+All ensemble members are fused into stacked LSTMs and run together each timestep (outputs are identical to running them one by one). The stacking can be chosen with the `RUST_LSTM_ENSEMBLE_LAYOUT` environment variable:
+
+| Layout | Description |
+| --- | --- |
+| `batched-by-hidden` (default) | One batched matmul per distinct hidden size; no padding |
+| `batched` | All members batched, zero-padded to the largest input/hidden size |
+| `block-diagonal` | One wide LSTM with block-diagonal weights; much slower on CPU (mostly-zero matrices) |
+| `per-model` | Each member run separately |
+
 ## Nextgen realization
 To use the model update your NextGen configuration file with the module like this:
 ```json
