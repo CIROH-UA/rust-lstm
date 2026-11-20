@@ -1,32 +1,50 @@
 use bmi_rs::bmi::{Bmi, BmiResult, Location, RefValues, ValueType, Values, register_model};
 use burn::nn::LstmState;
 use burn::prelude::*;
-use burn::record::{FullPrecisionSettings, Recorder};
-use burn_import::pytorch::PyTorchFileRecorder;
 use glob::glob;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
-
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[doc(hidden)]
 pub mod nextgen_lstm;
-mod python;
-mod weights;
-use nextgen_lstm::{NextgenLstm, vec_to_tensor};
-use python::convert_model;
+use nextgen_lstm::NextgenLstm;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ModelMetadata {
-    input_size: usize,
+/// The fields we need from a neuralhydrology training `config.yml`.
+#[derive(Debug, Deserialize)]
+struct TrainingConfig {
+    run_dir: PathBuf,
     hidden_size: usize,
-    output_size: usize,
-    input_names: Vec<String>,
-    output_names: Vec<String>,
+    dynamic_inputs: Vec<String>,
+    #[serde(default)]
+    static_attributes: Option<Vec<String>>,
+    target_variables: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// neuralhydrology's `train_data/train_data_scaler.yml`. The dynamic-feature scalers are
+/// serialised xarray datasets (`xarray.Dataset.to_dict()`), the static ones are plain maps.
+#[derive(Debug, Deserialize)]
+struct ScalerFile {
+    #[serde(default)]
+    attribute_means: Option<HashMap<String, f64>>,
+    #[serde(default)]
+    attribute_stds: Option<HashMap<String, f64>>,
+    xarray_feature_center: XarrayDataset,
+    xarray_feature_scale: XarrayDataset,
+}
+
+#[derive(Debug, Deserialize)]
+struct XarrayDataset {
+    data_vars: HashMap<String, XarrayVariable>,
+}
+
+#[derive(Debug, Deserialize)]
+struct XarrayVariable {
+    data: f64,
+}
+
+#[derive(Debug)]
 struct TrainingScalars {
     input_mean: Vec<f32>,
     input_std: Vec<f32>,
@@ -34,12 +52,72 @@ struct TrainingScalars {
     output_std: f32,
 }
 
+impl TrainingScalars {
+    /// Builds the input scalers in model input order (dynamic inputs, then static attributes)
+    /// and the output scaler for the first target variable.
+    fn from_scaler_file(scaler: &ScalerFile, config: &TrainingConfig) -> BmiResult<Self> {
+        let dynamic = |dataset: &XarrayDataset, name: &str| {
+            dataset
+                .data_vars
+                .get(name)
+                .map(|v| v.data as f32)
+                .ok_or_else(|| format!("train_data_scaler.yml has no scaler for {name}"))
+        };
+        let attribute = |map: &Option<HashMap<String, f64>>, name: &str| {
+            map.as_ref()
+                .and_then(|m| m.get(name))
+                .map(|v| *v as f32)
+                .ok_or_else(|| format!("train_data_scaler.yml has no scaler for {name}"))
+        };
+
+        let mut input_mean = Vec::new();
+        let mut input_std = Vec::new();
+        for name in &config.dynamic_inputs {
+            input_mean.push(dynamic(&scaler.xarray_feature_center, name)?);
+            input_std.push(dynamic(&scaler.xarray_feature_scale, name)?);
+        }
+        for name in config.static_attributes.iter().flatten() {
+            input_mean.push(attribute(&scaler.attribute_means, name)?);
+            input_std.push(attribute(&scaler.attribute_stds, name)?);
+        }
+
+        let target = config
+            .target_variables
+            .first()
+            .ok_or("training config has no target_variables")?;
+        Ok(Self {
+            input_mean,
+            input_std,
+            output_mean: dynamic(&scaler.xarray_feature_center, target)?,
+            output_std: dynamic(&scaler.xarray_feature_scale, target)?,
+        })
+    }
+}
+
+/// Removes `..` components textually (e.g. `../models/../models/x` -> `../models/x`) so a
+/// relative `run_dir` isn't resolved through symlinked directories by the OS.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir if matches!(out.last(), Some(Component::Normal(_))) => {
+                out.pop();
+            }
+            Component::ParentDir if matches!(out.last(), Some(Component::RootDir)) => {}
+            other => out.push(other),
+        }
+    }
+    out.iter().collect()
+}
+
 // Structure to hold a single model's components
-struct ModelInstance<B: Backend> {
-    model: NextgenLstm<B>,
-    metadata: ModelMetadata,
+struct ModelInstance {
+    model: NextgenLstm,
+    input_names: Vec<String>,
     scalars: TrainingScalars,
-    lstm_state: Option<LstmState<B, 2>>,
+    lstm_state: Option<LstmState<2>>,
 }
 
 // Macro to handle variable lookup
@@ -55,10 +133,10 @@ macro_rules! match_var {
     };
 }
 
-pub struct LstmBmi<B: Backend> {
+pub struct LstmBmi {
     // Ensemble of models
-    models: Vec<ModelInstance<B>>,
-    device: B::Device,
+    models: Vec<ModelInstance>,
+    device: Device,
 
     // Configuration
     config_path: String,
@@ -79,8 +157,8 @@ pub struct LstmBmi<B: Backend> {
     time_step: f64,
 }
 
-impl<B: Backend> LstmBmi<B> {
-    pub fn new(device: B::Device) -> Self {
+impl LstmBmi {
+    pub fn new(device: Device) -> Self {
         // Define all BMI variable names
         let input_vars = vec![
             "atmosphere_water__liquid_equivalent_precipitation_rate",
@@ -168,148 +246,52 @@ impl<B: Backend> LstmBmi<B> {
             .unwrap_or_else(|| internal.to_string())
     }
 
-    fn load_single_model(&self, training_config_path: &Path) -> BmiResult<ModelInstance<B>> {
-        let training_config = fs::read_to_string(training_config_path)?;
-        let training_config: serde_yaml::Value = serde_yaml::from_str(&training_config)?;
+    fn load_single_model(&self, training_config_path: &Path) -> BmiResult<ModelInstance> {
+        let config: TrainingConfig =
+            serde_yaml::from_str(&fs::read_to_string(training_config_path)?)?;
 
-        // Find model path
-        let model_dir = training_config["run_dir"]
-            .as_str()
-            .ok_or("Missing run_dir")?
-            .replace(
-                "..",
-                training_config_path
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .to_str()
-                    .unwrap(),
-            );
-
-        let model_path = glob(&format!("{}/model_*.pt", model_dir))?
-            .next()
-            .ok_or("No model file found")??;
-
-        // Convert weights if needed
-        let model_folder = model_path.parent().unwrap();
-        let burn_dir = model_folder.join("burn");
-        let converted_path = burn_dir.join(model_path.file_name().unwrap());
-        let lock_file_path = burn_dir.join(".conversion.lock");
-
-        // Create burn directory if it doesn't exist
-        if !burn_dir.exists() {
-            fs::create_dir_all(&burn_dir)?;
-        }
-
-        // Check if conversion is needed
-        let needs_conversion = !converted_path.exists()
-            || !converted_path.with_extension("json").exists()
-            || !burn_dir.join("train_data_scaler.json").exists()
-            || !burn_dir.join("weights.json").exists();
-
-        if needs_conversion {
-            // Try to acquire lock
-            let mut lock_acquired = false;
-            let process_id = std::process::id();
-
-            loop {
-                // Try to create lock file atomically
-                match fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&lock_file_path)
-                {
-                    Ok(mut file) => {
-                        // Write process ID to lock file for debugging
-                        use std::io::Write;
-                        writeln!(file, "Locked by process {}", process_id)?;
-                        lock_acquired = true;
-                        // println!("Process {} acquired conversion lock", process_id);
-                        break;
-                    }
-                    Err(_) => {
-                        // Lock file exists, another process is converting
-                        // println!(
-                        //     "Process {} waiting for model conversion (lock held by another process)...",
-                        //     process_id
-                        // );
-                        std::thread::sleep(std::time::Duration::from_millis(1000));
-
-                        // Check if conversion is complete
-                        if converted_path.exists()
-                            && converted_path.with_extension("json").exists()
-                            && burn_dir.join("train_data_scaler.json").exists()
-                            && burn_dir.join("weights.json").exists()
-                        {
-                            // println!("Process {} found completed conversion", process_id);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // If we acquired the lock, do the conversion
-            if lock_acquired {
-                println!(
-                    "Process {} converting PyTorch weights to Burn format for model: {}",
-                    process_id,
-                    model_path.display()
-                );
-
-                // Perform conversion
-                match convert_model(&model_path, &training_config_path) {
-                    Ok(_) => {
-                        println!("Process {} completed model conversion", process_id);
-                    }
-                    Err(e) => {
-                        // Clean up lock file on error
-                        let _ = fs::remove_file(&lock_file_path);
-                        return Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("Model conversion failed: {}", e),
-                        )));
-                    }
-                }
-
-                // Remove lock file after successful conversion
-                fs::remove_file(&lock_file_path)?;
-                println!("Process {} released conversion lock", process_id);
-            }
+        // A relative run_dir is relative to the directory containing the run directories,
+        // i.e. the grandparent of `<runs>/<run>/config.yml`.
+        let run_dir = if config.run_dir.is_absolute() {
+            config.run_dir.clone()
         } else {
-            // println!("Model already converted, skipping conversion");
-        }
+            normalize_lexically(
+                &training_config_path
+                    .parent()
+                    .and_then(Path::parent)
+                    .unwrap_or(Path::new(""))
+                    .join(&config.run_dir),
+            )
+        };
 
-        // Load metadata
-        let metadata_str = fs::read_to_string(converted_path.with_extension("json"))?;
-        let metadata: ModelMetadata = serde_json::from_str(&metadata_str)?;
+        let model_path = glob(&format!("{}/model_*.pt", run_dir.display()))?
+            .next()
+            .ok_or_else(|| format!("No model_*.pt file found in {}", run_dir.display()))??;
 
-        // Load scalars
-        let scalars_str = fs::read_to_string(burn_dir.join("train_data_scaler.json"))?;
-        let scalars: TrainingScalars = serde_json::from_str(&scalars_str)?;
+        let scaler_path = run_dir.join("train_data").join("train_data_scaler.yml");
+        let scaler: ScalerFile = serde_yaml::from_str(&fs::read_to_string(&scaler_path)?)?;
+        let scalars = TrainingScalars::from_scaler_file(&scaler, &config)?;
 
-        // Load model
-        let record = PyTorchFileRecorder::<FullPrecisionSettings>::default()
-            .load(converted_path.into(), &self.device)?;
+        let input_names: Vec<String> = config
+            .dynamic_inputs
+            .iter()
+            .chain(config.static_attributes.iter().flatten())
+            .cloned()
+            .collect();
 
         let mut model = NextgenLstm::init(
             &self.device,
-            metadata.input_size,
-            metadata.hidden_size,
-            metadata.output_size,
+            input_names.len(),
+            config.hidden_size,
+            config.target_variables.len(),
         );
-        model = model.load_record(record);
-        // model.load_json_weights(
-        model.load_weights(
-            &self.device,
-            burn_dir.join("weights.json").to_str().unwrap(),
-        );
+        model.load_pytorch(&model_path).map_err(|e| {
+            format!("failed to load weights from {}: {e}", model_path.display())
+        })?;
 
         Ok(ModelInstance {
             model,
-            metadata,
+            input_names,
             scalars,
             lstm_state: None,
         })
@@ -331,11 +313,11 @@ impl<B: Backend> LstmBmi<B> {
             .collect();
 
         // Create input tensor
-        let input_tensor_data = vec_to_tensor(
-            &scaled_inputs,
-            vec![1, 1, model_instance.metadata.input_size],
+        let input_size = scaled_inputs.len();
+        let input_tensor = Tensor::<3>::from_data(
+            TensorData::new(scaled_inputs, [1, 1, input_size]),
+            &self.device,
         );
-        let input_tensor = Tensor::from_data(input_tensor_data, &self.device);
 
         // Forward pass
         let (output, new_state) = model_instance
@@ -344,7 +326,10 @@ impl<B: Backend> LstmBmi<B> {
         model_instance.lstm_state = Some(new_state);
 
         // Process output
-        let output_vec: Vec<f32> = output.into_data().to_vec().unwrap();
+        let output_vec: Vec<f32> = output
+            .into_data()
+            .try_to_vec()
+            .map_err(|e| format!("unexpected model output: {e:?}"))?;
         let output_value = output_vec[0];
 
         // Denormalize
@@ -362,7 +347,7 @@ impl<B: Backend> LstmBmi<B> {
         // Run all models and collect outputs
         let mut ensemble_outputs = Vec::new();
         for i in 0..self.models.len() {
-            let input_names = self.models[i].metadata.input_names.clone();
+            let input_names = self.models[i].input_names.clone();
             // Gather inputs in the correct order
             let mut inputs = Vec::new();
             for name in &input_names {
@@ -403,7 +388,7 @@ impl<B: Backend> LstmBmi<B> {
     }
 }
 
-impl<B: Backend> Bmi for LstmBmi<B> {
+impl Bmi for LstmBmi {
     fn initialize(&mut self, config_file: &str) -> BmiResult<()> {
         // println!("Initializing LSTM BMI with config: {}", config_file);
         self.config_path = config_file.to_string();
@@ -698,11 +683,28 @@ impl<B: Backend> Bmi for LstmBmi<B> {
 // Export function for C binding
 #[unsafe(no_mangle)]
 pub extern "C" fn register_bmi_lstm(handle: *mut ffi::Bmi) -> *mut ffi::Bmi {
-    // type Backend = burn::backend::NdArray;
-    type Backend = burn::backend::Candle;
-    let device = Default::default();
-
-    let model = LstmBmi::<Backend>::new(device);
+    let model = LstmBmi::new(Device::flex());
     register_model(handle, model);
     handle
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_lexically;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn normalizes_relative_run_dirs() {
+        let cases = [
+            ("../models/../models/run", "../models/run"),
+            ("../../a/b", "../../a/b"),
+            ("/x/models/../y", "/x/y"),
+            ("/../y", "/y"),
+            ("models/./run", "models/run"),
+            ("run", "run"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_lexically(Path::new(input)), PathBuf::from(expected), "{input}");
+        }
+    }
 }

@@ -15,7 +15,7 @@ This project would not have been possible without:
 
 ## Features
 
-- Native Rust implementation using the [Burn](https://burn.dev/) deep learning framework
+- Native Rust implementation using the [Burn](https://burn.dev/) deep learning framework (pure-Rust Flex CPU backend)
 - Compatible with existing PyTorch model weights from jmframe/lstm and NextGen-In-A-Box
 - Drop-in replacement for Python BMI LSTM adapter
 - Supports ensemble model configurations
@@ -25,15 +25,12 @@ This project would not have been possible without:
 
 - Rust 2024 edition
 - Local clone of [bmi-rs](https://github.com/aaraney/bmi-rs)
-- [Astral UV](https://docs.astral.sh/uv/) installed and accessible on the system path
 
 ## Usage
 
 The adapter is designed to work with NextGen framework configurations:
 
 ```bash
-# Install Astral UV
-curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install rust
 curl https://sh.rustup.rs -sSf | bash -s -- -y && . "$HOME/.cargo/env"
 
@@ -52,7 +49,7 @@ This implementation works with:
 - Models included in NextGen-In-A-Box
 - Any PyTorch LSTM model following the [neuralhydrology 1 layer lstm + 1 linear layer architecture](https://github.com/CIROH-UA/lstm/blob/b6fdbfb2cae1528f4a0588ab0fd29d99103fc0b6/lstm/nextgen_cuda_lstm.py#L13)
 
-Weight conversion from PyTorch to Burn format is handled automatically on first run.
+The PyTorch checkpoint (`model_*.pt`), training `config.yml` and `train_data/train_data_scaler.yml` are read directly from each model's run directory. No Python or conversion step is needed.
 
 ## Nextgen realization
 To use the model update your NextGen configuration file with the module like this:

@@ -1,6 +1,6 @@
 //! Benchmarks for the LSTM BMI.
 //!
-//! Two levels are measured, each on the Candle (production) and NdArray backends:
+//! Two levels are measured, each on the Flex (production) and NdArray backends:
 //!
 //! * `forward_step` – one stateful forward pass of a single 10→64→1 `NextgenLstm`
 //!   (batch 1, seq 1), i.e. the inner kernel ngen calls once per timestep per model.
@@ -19,7 +19,6 @@ use std::hint::black_box;
 use std::path::{Path, PathBuf};
 
 use bmi_rs::bmi::{Bmi, RefValues};
-use burn::backend::{Candle, NdArray};
 use burn::nn::LstmState;
 use burn::prelude::*;
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -31,7 +30,7 @@ const DEFAULT_CONFIGS: [&str; 2] = [
     "/ngen/ngen/extern/lstm/bmi_config_files/02046000_nh_AORC_hourly_ensemble.yml",
     "~/tools/lstm/bmi_config_files/02046000_nh_AORC_hourly_ensemble.yml",
 ];
-const DEFAULT_WEIGHTS: &str = "/ngen/ngen/extern/lstm/trained_neuralhydrology_models/nh_AORC_hourly_25yr_1210_112435_7/burn/weights.json";
+const DEFAULT_WEIGHTS: &str = "/ngen/ngen/extern/lstm/trained_neuralhydrology_models/nh_AORC_hourly_25yr_1210_112435_7/model_epoch007.pt";
 
 const INPUT_SIZE: usize = 10;
 const HIDDEN_SIZE: usize = 64;
@@ -49,26 +48,25 @@ const FORCINGS: [(&str, f64); 8] = [
     ("land_surface_wind__y_component_of_velocity", -0.7),
 ];
 
-fn forward_step<B: Backend>(c: &mut Criterion, name: &str) {
-    let device = B::Device::default();
-    let mut model = NextgenLstm::<B>::init(&device, INPUT_SIZE, HIDDEN_SIZE, OUTPUT_SIZE);
+fn forward_step(c: &mut Criterion, name: &str, device: Device) {
+    let mut model = NextgenLstm::init(&device, INPUT_SIZE, HIDDEN_SIZE, OUTPUT_SIZE);
     if Path::new(DEFAULT_WEIGHTS).exists() {
-        model.load_weights(&device, DEFAULT_WEIGHTS);
+        model.load_pytorch(DEFAULT_WEIGHTS).unwrap();
     } else {
         eprintln!("forward_step: {DEFAULT_WEIGHTS} not found, timing zero-initialised weights");
     }
 
     let input: Vec<f32> = (0..INPUT_SIZE).map(|i| (i as f32 * 0.37).sin()).collect();
-    let mut state: Option<LstmState<B, 2>> = None;
+    let mut state: Option<LstmState<2>> = None;
 
     c.bench_function(&format!("forward_step/{name}"), |b| {
         b.iter(|| {
-            let x = Tensor::<B, 1>::from_floats(input.as_slice(), &device)
+            let x = Tensor::<1>::from_floats(input.as_slice(), &device)
                 .reshape([1, 1, INPUT_SIZE]);
             let (out, new_state) = model.forward(black_box(x), state.take());
             state = Some(new_state);
             // Pull the scalar back to the host, as the BMI does every step.
-            let v: Vec<f32> = out.into_data().to_vec().unwrap();
+            let v: Vec<f32> = out.into_data().try_to_vec().unwrap();
             black_box(v[0])
         })
     });
@@ -94,11 +92,11 @@ fn bench_config() -> Option<PathBuf> {
     }
 }
 
-fn bmi_update<B: Backend>(c: &mut Criterion, name: &str, config: &Path) {
+fn bmi_update(c: &mut Criterion, name: &str, device: Device, config: &Path) {
     // train_cfg_file entries are relative to the working directory.
     std::env::set_current_dir(config.parent().unwrap()).unwrap();
 
-    let mut bmi = LstmBmi::<B>::new(B::Device::default());
+    let mut bmi = LstmBmi::new(device);
     bmi.initialize(config.to_str().unwrap())
         .expect("failed to initialize BMI");
 
@@ -121,12 +119,16 @@ fn bmi_update<B: Backend>(c: &mut Criterion, name: &str, config: &Path) {
 }
 
 fn benches(c: &mut Criterion) {
-    forward_step::<Candle>(c, "candle");
-    forward_step::<NdArray>(c, "ndarray");
+    #[allow(deprecated)] // NdArray is deprecated in burn 0.22; kept as a comparison point.
+    let backends = [("flex", Device::flex()), ("ndarray", Device::ndarray())];
 
+    for (name, device) in &backends {
+        forward_step(c, name, device.clone());
+    }
     if let Some(config) = bench_config() {
-        bmi_update::<Candle>(c, "candle", &config);
-        bmi_update::<NdArray>(c, "ndarray", &config);
+        for (name, device) in &backends {
+            bmi_update(c, name, device.clone(), &config);
+        }
     }
 }
 
